@@ -45,6 +45,7 @@ configs/strata-iq3_s.json     双卡启动配置（peer tier / int8 KV / 256K / 
 scripts/build-strata-v100.sh  SM70 实验构建编译脚本
 scripts/mtp_extract_local.py  MTP 草稿头本地提取（从 BF16 safetensors 分片）
 docs/porting-notes.md         完整过程实录：编译→模型→MTP→双卡启动→调优→踩坑
+docs/benchmarks.md            深度速度基准（prefill/解码/KV复用/流式/MTP）
 ```
 
 ## 快速复现
