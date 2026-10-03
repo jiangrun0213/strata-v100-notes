@@ -34,7 +34,8 @@
     "--pcie-frac",
     "0.20",
     "--pool-workers",
-    "9"
+    "9",
+    "--vision"
   ],
   "cwd": "/home/jiangrun02123/strata",
   "tokenizer": "/home/jiangrun02123/Strata-data/packs/iq3_s/tokenizer",
@@ -50,5 +51,11 @@
     1
   ],
   "gpus_asked": true,
-  "layer_split": "auto"
+  "layer_split": "auto",
+  "vision": {
+    "exe": "/home/jiangrun02123/strata/engine/strata-vision",
+    "mmproj": "/home/jiangrun02123/models/flash-next/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "/home/jiangrun02123/models/flash-next/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "threads": 10
+  }
 }

@@ -101,6 +101,37 @@ GPU1  15.7 GiB  Peer Tier：二级自适应专家缓存（NVLink P2P 取回，�
 API    http://127.0.0.1:18200/v1（OpenAI 兼容）
 ```
 
+### 2.4 视觉（多模态）启用
+
+默认打包是纯文本模式，发图会报 `400: this server was started without the vision encoder`。
+启用需三步：
+
+1. **编译图像编码器**（CPU 版即可，不占已满载的显存）：
+
+   ```bash
+   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release \
+       -DLLAMA_DIR=<llama.cpp worktree> -DSTRATA_VISION_CUDA=OFF
+   cmake --build build-vision --target strata-vision
+   cp build-vision/bin/strata-vision engine/     # 7.4M
+   ```
+
+2. **配置**：引擎 args 加 `--vision`；config 顶层加（server.py 检测到即启用）：
+
+   ```json
+   "vision": {
+     "exe": "<strata目录>/engine/strata-vision",
+     "mmproj": "<模型目录>/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+     "model": "<模型目录>/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "threads": 10
+   }
+   ```
+
+3. **重启**后 `/health` 应返回 `"images": true`。
+
+实测（CPU 编码 + 推理端到端）：小图 **5.1 s**（编码 ~3s + 生成 2.1s @ 50.8 tok/s）；
+6MB 大图编码约 2 分钟（BF16 mmproj 纯 CPU，可改 `STRATA_VISION_CUDA=ON` 编译 GPU 版提速，
+但需注意双卡显存余量）。相同图片编码结果按 hash 缓存，会话内重复发图不重编码。
+
 ## 3. 深度速度基准
 
 口径：客户端 OpenAI API 实测 + 服务端日志双口径交叉验证；MTP 接受率 70.5%（基准）↔ 71.5%（日常）互相印证。
