@@ -1,92 +1,110 @@
-# strata-v100-notes — 双 V100 推理平台实战笔记
+# Strata on 2× V100-SXM2 — Flash-Next 125B MoE 加载实录
 
-在一台 **精粤 X99 TITANIUM D3 + Xeon E5-2666 v3 + 2×Tesla V100-SXM2-16GB (NVLink NV6)** 的工作站上，
-部署、对比、调优四个推理引擎（llama.cpp / NInfer-V100-Duo / KVMem / Strata）的完整记录。
+在一台 **双 Tesla V100-SXM2-16GB（NVLink NV6）** 的工作站上，
+成功编译并运行 [Niko1221/Strata](https://github.com/Niko1221/Strata)（CPU+GPU 混合 MoE 推理引擎），
+加载 **Qwen3.8-Flash-Next-125B（IQ3_S，77.9 GiB）**，双卡各占 15.7 GiB，解码 **44.8 tok/s**。
 
-含：实测基准数据、编译移植踩坑、systemd 生产化部署、NVLink 带宽实测程序。
+> Strata 官方硬件门槛是 RTX 20+（sm_75），并无 V100 支持。
+> 本仓库记录如何走通源码里的**实验通道**在 Volta (sm_70) 上跑起来。
 
-## 硬件要点
+## 背景：为什么 V100 能跑 Strata
 
-| 项 | 配置 |
+Strata 源码中存在社区实验构建选项（对应 issue #236）：
+
+```cmake
+option(STRATA_EXPERIMENTAL_SM60 "community build for ... Pascal sm_60, Volta sm_70 (#236)" OFF)
+```
+
+两个硬性前提：
+
+1. **必须 CUDA 12.x** —— CUDA 13 已删除 sm_70 架构支持（本机用 CUDA 12.8）
+2. 编译时开启 `-DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70`
+
+## 双卡运行形态（peer-tier 模式）
+
+```
+GPU0  15.7 GiB  主卡：密集层 + KV(int8, 32K resident) + MTP 草稿头 + 主专家缓存(4503 槽, 8.53 GiB)
+GPU1  15.7 GiB  Peer Tier：--peer-device 1 二级自适应专家缓存（NVLink P2P 取回）
+API   http://127.0.0.1:18200/v1（OpenAI 兼容）
+```
+
+| 配置 | 解码速度 |
 |---|---|
-| 平台 | X99 寨板 + E5-2666 v3（无核显） |
-| GPU | 2× V100-SXM2-16GB，SXM2→PCIe 转接卡 |
-| 关键配置 | BIOS **x8x8 Bifurcation** —— 单 x16 端口只能接一个设备，拆分后 CPU 端口裂变出第二个根端口，第二张卡才有归属 |
-| NVLink | NV6 全链路 Active（6×25.78 GB/s），**实测 P2P 142.5 GB/s**（理论 154.7 的 92%） |
+| 基线（peer tier 默认） | **44.8 tok/s** |
+| + hugepages / CPU performance / 校准参数 | 均无增益（44~45 持平） |
 
-> 踩坑：SXM2 转接卡在 x8 电气下完全正常工作（最初误判为"只认 x16"，
-> 真相是未拆分的 x16 端口物理上只暴露一个设备）。
+**性能天花板说明**：Strata 的 QSA scorer 依赖 sm_80+ 的 tf32 mma 指令，
+sm_70 走 fp32-FMA 回退路径 —— 44~52 tok/s 就是双 V100 跑这个 125B MoE 的实际上限。
+另：Strata 的 tensor 并行模式在 SM70 上有 meta allocator 段错误（上游 bug），
+**只能用 peer-tier 模式**，不要开 TP。
 
-## 四引擎实测对比（Qwen3.8-27B / Flash-Next-125B）
-
-| 指标 | llama.cpp (MTP) | NInfer-V100-Duo (TP2) | KVMem (分层KV) | Strata (MoE) |
-|---|---|---|---|---|
-| 单流解码 | 40~52 tok/s | 47.8 均值 / 52.4 峰值 | 44.2 tok/s（**单卡**） | 44.8 tok/s（125B MoE） |
-| 长输入预填充 | ≈723 tok/s | **≈1510 tok/s (2×)** | — | — |
-| 上下文 | 192K~200K（Q8 KV） | 180K 默认 | **256K**（KV 卸载到 RAM） | 128K |
-| 显存 | 双卡 28.4 GiB | 双卡 13.8 GiB 对称 | **仅 GPU0 14.2 GiB** | 双卡 15.7 GiB 对称 |
-| 多模态 | ✅ mmproj | GGUF 路线不支持 | ✅ | ✅ |
-| 适用场景 | 日常主力/生态最全 | 长文档 bulk 预填充 | 超长 Agent 工作区/解放第二张卡 | 125B MoE 推理 |
-
-**核心结论**：
-- 显存余量和 CPU 调度是这台双 V100 的两块天花板（GPU 时钟不是 —— 锁频实验证实中性）
-- V100 (sm_70) 上的结构性限制：Strata 的 QSA tf32-mma 需要 sm_80+，sm_70 走 fp32-FMA 回退
-- KV 量化甜点是 **q8_0**；iq4_nl 是严重负优化（MTP 草稿接受率 87%→31%）
-
-## 目录
+## 文件说明
 
 ```
-docs/
-  NInfer-V100-Duo对比测试报告.md   ← 全量记录：部署/修改/基准/踩坑（12 章）
-scripts/
-  build-strata-v100.sh             Strata 编译脚本（SM70 + CUDA 12.8 实验通道）
-  mtp_extract_local.py             MTP 草稿头本地提取（绕开 HF 下载卡死）
-  switch-to-kvmem-dual.sh          KVMem 双卡 TP2 512K 启动脚本
-  p2p_test.cu                      NVLink P2P 带宽实测程序
-  systemd/
-    llama-server.service           生产级服务单元（含竞态防护设计）
-    wait-for-cuda                  CUDA 就绪轮询器
-    cuda_check.cu                  CUDA 运行时健康探针
+configs/strata-iq3_s.json     双卡启动配置（peer tier / int8 KV / 256K / MTP）
+scripts/build-strata-v100.sh  SM70 实验构建编译脚本
+scripts/mtp_extract_local.py  MTP 草稿头本地提取（从 BF16 safetensors 分片）
+docs/porting-notes.md         完整过程实录：编译→模型→MTP→双卡启动→调优→踩坑
 ```
 
-## 脚本用法
+## 快速复现
+
+### 1. 编译（约 30-60 分钟）
 
 ```bash
-# NVLink 带宽实测（期望 ~142 GB/s；若只有 ~8 GB/s 说明 P2P 被禁用）
-nvcc -o p2p_test scripts/p2p_test.cu && ./p2p_test
+# 前置：本地准备 llama.cpp worktree 以短路 FetchContent（避免全量 clone 挂死）
+git clone https://github.com/ggml-org/llama.cpp strata-llamacpp-src
+cd strata-llamacpp-src && git checkout 3cf0325   # "CUDA: enable sparse fa for qwen4"
 
-# Strata 编译（需 CUDA 12.x，CUDA 13 已删除 sm_70）
 bash scripts/build-strata-v100.sh
-
-# systemd 部署（开机自启 + 崩溃自愈 + CUDA 竞态防护）
-sudo cp scripts/systemd/llama-server.service /etc/systemd/system/
-sudo cp scripts/systemd/wait-for-cuda /usr/local/bin/
-nvcc -o /usr/local/bin/cuda_check scripts/systemd/cuda_check.cu
-sudo systemctl daemon-reload && sudo systemctl enable --now llama-server
+# 产物: build/bin/strata
 ```
 
-## 关键踩坑清单（详见 docs 报告）
+关键 cmake 参数见脚本：`STRATA_EXPERIMENTAL_SM60=ON` +
+`FETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=<本地 worktree>`。
 
-1. **PCIe Bifurcation**：双卡识别的前提。BIOS 拆 x16→x8x8 后拓扑多出独立根端口
-2. **IOMMU 转换域**：NInfer 会因 sysfs 预检误判而禁用 P2P（回退 host 中转，-10%）。
-   修改 `allreduce.cu` 保留运行时实测验证、只绕过静态预检，fail-safe
-3. **CUDA 竞态**：开机 1 分钟内启动 llama-server → `nvidia_uvm` 未就绪 →
-   **静默降级 CPU 模式**（无任何报错！）。systemd 单元用
-   `ExecStartPre=+modprobe nvidia_uvm || true` + 就绪轮询器封堵
-4. **MTP on sm_70**：NVIDIA 开源内核模块（`-open`）不支持 Volta，必须用专有驱动分支
-5. **跨引擎 tokenizer 差异**：同一文本 llama.cpp=12.3K tokens vs NInfer=36.6K tokens，
-   跨引擎 prefill 对比必须按各自 token 流计算
-6. **`/tmp` 重启清空**：编译产物、测试程序、服务日志都不要放 /tmp
-7. **模型下载**：魔搭 modelscope 直连 34 MiB/s，比 hf-mirror 快约 300×（国内环境）
-8. **Strata 上游 bug**：tensor 并行模式的 meta allocator 在 SM70 段错误，只能用
-   peer-tier 模式（NVLink P2P 专家缓存分级）
+### 2. 模型打包 + MTP 草稿头
+
+```bash
+# 模型下载：国内环境强烈建议用魔搭 modelscope 直链（实测 34 MiB/s）
+# GGUF (77.9 GiB, 2 分片) → setup.py 打包（复用已下载文件）
+python3 setup.py --gguf-dir <gguf目录>          # → packs/iq3_s
+
+# MTP 草稿头：mtp_fetch.py 从 HF 下载会被 SSL 卡死，
+# 改为手动拉 BF16 safetensors 分片后本地提取：
+python3 scripts/mtp_extract_local.py            # → 31 张量 / 5.21 GB
+```
+
+### 3. 双卡启动
+
+```bash
+cd ~/strata && .venv/bin/python serve/server.py --engine strata \
+    --config configs/strata-iq3_s.json --port 18200
+```
+
+配置要点（完整见 `configs/strata-iq3_s.json`）：
+`--peer-device 1`（GPU1 做 peer tier）、`--kv int8 --kv-resident 32768`、
+`--spec 4`（MTP 窗口）、`--max-context 262144`。
+
+## 踩坑清单
+
+| # | 坑 | 解法 |
+|---|---|---|
+| 1 | CUDA 13 无 sm_70 | 固定 CUDA 12.x（12.8 验证通过） |
+| 2 | FetchContent 全量 clone llama.cpp 挂死 | 本地 worktree 指定 commit 3cf0325 + `FETCHCONTENT_SOURCE_DIR_*` 短路 |
+| 3 | 42 文件 KVMem patch 未应用 | 显式重跑 `apply-patches.sh` |
+| 4 | `kvmem-gdn-replay-test` 编译错误（CUDA13-only 符号） | 注释该测试 target |
+| 5 | `mtp_fetch.py` HF SSL 卡死 | 魔搭拉 28 个 BF16 分片（52G）→ 本地提取脚本 → 修正 `mtp-inventory.json` 的 repo 字段后零下载收尾 |
+| 6 | tensor 并行模式 SM70 段错误（meta allocator 上游 bug） | 只用 `--peer-device` peer-tier 模式 |
+| 7 | 大页内存只拿到 22.5/47G（运行中碎片） | 启动前预留，或接受默认；实测对热路径无收益 |
+| 8 | 校准器建议参数（短基准偏乐观） | 长输出实测无增益，保持默认即可 |
 
 ## 环境版本
 
 - NVIDIA Driver 580.178.04 / CUDA 12.8 / Ubuntu 24.04
-- llama.cpp f7b384c (build 136, GGML_CUDA=ON SM70)
-- NInfer-V100-Duo fork plus1998/NInfer-V100-Duo (SM70, 303/303 构建通过)
+- Strata v0.17.0 源码 + llama.cpp 3cf0325（FetchContent 依赖）
+- 模型：Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S（77.9 GiB）+ mmproj 0.9G
 
 ## License
 
-MIT（笔记与脚本）。引用的各上游项目遵循其各自许可证。
+MIT（本仓库笔记与脚本）。Strata 及其依赖遵循上游各自许可证。
