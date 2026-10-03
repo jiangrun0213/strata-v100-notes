@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Poll until the CUDA runtime can see both GPUs (max 120s), then exit 0.
+for i in $(seq 1 60); do
+    if /usr/local/bin/cuda_check >/dev/null 2>&1; then
+        echo "wait-for-cuda: CUDA ready (waited $((i*2))s)"
+        exit 0
+    fi
+    sleep 2
+done
+echo "wait-for-cuda: CUDA not ready after 120s, aborting startup" >&2
+exit 1

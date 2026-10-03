@@ -1,0 +1,34 @@
+[Unit]
+Description=llama.cpp server - Qwen3.8-27B on 2x Tesla V100 (TP: pipeline, MTP spec-decode)
+Documentation=https://github.com/ggml-org/llama.cpp
+Wants=network-online.target
+After=network-online.target nvidia-persistenced.service
+# 防止反复崩溃触发 systemd 的启动频率限制
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=jiangrun02123
+Group=jiangrun02123
+WorkingDirectory=/home/jiangrun02123/llama.cpp/build/bin
+Environment=LD_LIBRARY_PATH=/home/jiangrun02123/llama.cpp/build/bin
+# 确保 nvidia_uvm 模块在场（CUDA 隐式依赖，开机早期可能未自动加载）
+ExecStartPre=+/usr/sbin/modprobe nvidia_uvm || true
+# 竞态防护：轮询等待 CUDA 运行时就绪（最长 120s），失败则不启动
+ExecStartPre=/usr/local/bin/wait-for-cuda
+ExecStart=/home/jiangrun02123/llama.cpp/build/bin/llama-server \
+    -m /home/jiangrun02123/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf \
+    --mmproj /home/jiangrun02123/models/mmproj-Qwen3.8-27B-BF16.gguf \
+    -ngl 99 --host 127.0.0.1 --port 8081 \
+    -c 196608 --cache-type-k q8_0 --cache-type-v q8_0 \
+    -t 10 --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-n-min 1
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/jiangrun02123/llama-server.log
+StandardError=append:/home/jiangrun02123/llama-server.log
+# GPU 掉卡等极端情况下的兜底超时
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
