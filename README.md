@@ -236,9 +236,25 @@ python3 scripts/bench_strata.py
 # 服务端口径原始记录
 grep 'prompt [0-9]* tokens' ~/strata/strata-iq3_s.log
 
-# 运维备忘
-tail -f ~/strata/strata-iq3_s.log                        # 日志
+# systemd 开机自启（已部署：竞态防护 + 崩溃自愈）
+
+# /etc/systemd/system/strata-server.service 关键设计:
+#   ExecStartPre=+modprobe nvidia_uvm || true      ← root 确保 uvm 模块在场
+#   ExecStartPre=/usr/local/bin/wait-for-cuda      ← 就绪轮询(最长120s)，防静默降级 CPU
+#   Restart=always / RestartSec=15                 ← 崩溃 15s 拉起
+#   StartLimitIntervalSec=600 / Burst=5            ← 防反复失败触发频率封禁
+#   （wait-for-cuda + cuda_check 源码见 llama.cpp 时代的同一套三件套，可从本仓库历史获取）
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now strata-server   # 开机自启 + 立即拉起
+systemctl status strata-server              # 日常管理
+tail -f ~/strata/strata-service.log         # 服务日志（stdout/stderr 落盘）
+tail -f ~/strata/strata-iq3_s.log           # 引擎推理日志
+
+# 手动启动（不用 systemd 时）
+tail -f ~/strata/strata-iq3_s.log                        # 引擎日志
 pkill -9 -f 'serve/server.py'; pkill -9 -f 'engine/strata'  # 停止
+# 注意: 手动启动前先 systemctl stop strata-server，否则 15s 后被拉起抢卡
 # 磁盘: ~/models/flash-next/ 77.9G + ~/Strata-data/ ~57G
 ```
 
