@@ -104,7 +104,7 @@ API    http://127.0.0.1:18200/v1（OpenAI 兼容）
 > **v0.1.40 多卡架构变化**：旧版 `--peer-device`（peer-tier）与 `--layer-split` 已合并 ——
 > 新版同时使用会直接报错退出。双卡只需 `layer_split: "auto"`，helper GPU 的专家缓存
 > 与热/冷调度由引擎自动处理（#848 #854）。解码 44.8（v0.1.38 部署日）→ 59~63（复测）
-> → **71.7~72.7 tok/s（v0.1.40）**。
+> → **71.7~72.7 tok/s（v0.1.40，0.1.40.2 持平）**。
 
 ### 2.4 视觉（多模态）启用
 
@@ -269,7 +269,7 @@ pkill -9 -f 'serve/server.py'; pkill -9 -f 'engine/strata'  # 停止
 ## 环境版本
 
 - NVIDIA Driver 580.178.04 / CUDA 12.8 / Ubuntu 24.04
-- Strata v0.1.40.1 源码 + llama.cpp 3cf0325（FetchContent 依赖）
+- Strata v0.1.40.2 源码 + llama.cpp 3cf0325（FetchContent 依赖）
 - 模型：Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S（77.9 GiB）+ mmproj 0.9G
 
 ## License
