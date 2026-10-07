@@ -3,7 +3,7 @@
 在一台 **双 Tesla V100-SXM2-16GB（NVLink NV6）** 的工作站上，成功编译并运行
 [Niko1221/Strata](https://github.com/Niko1221/Strata)（CPU+GPU 混合 MoE 推理引擎），
 加载 **Qwen3.8-Flash-Next-125B（IQ3_S，77.9 GiB）**，双卡各占 15.7 GiB，
-解码平台 **59~63 tok/s**，Prefill 765 tok/s。
+解码平台 **71~73 tok/s**（v0.1.40，旧版 59~63），Prefill 765 tok/s。
 
 > Strata 官方硬件门槛是 RTX 20+（sm_75），并无 V100 支持。
 > 本文档记录如何走通源码里的**实验通道**在 Volta (sm_70) 上跑起来，以及全套实测数据。
@@ -140,7 +140,7 @@ API    http://127.0.0.1:18200/v1（OpenAI 兼容）
 
 | 指标 | 结果 |
 |---|---|
-| **解码平台期（512/2048 tok 输出）** | **59~63 tok/s，波动 <5%** |
+| **解码平台期（512 tok，v0.1.40）** | **71.7~72.7 tok/s**（v0.1.38 为 59.1） |
 | 解码峰值（128 tok 短输出热身后） | 82 tok/s |
 | **Prefill（14.5K tokens）** | **765 tok/s** |
 | KV 复用（同 prompt 第二次） | **8017 ms → 58 ms（138×）**，99.9% 命中 |
@@ -190,12 +190,13 @@ chunk 间隔 p50:  0 ms（服务端每批推多个 token）｜ p95: 65 ms
 
 | 口径 | 速度 |
 |---|---|
-| 部署时固定 700 tok 基线 | 44.8 tok/s（含热身损失） |
-| 本基准平台期 | **59~62 tok/s** |
+| 部署时固定 700 tok 基线（v0.1.38） | 44.8 tok/s（含热身损失） |
+| v0.1.38 平台期 | 59~62 tok/s |
+| **v0.1.40 平台期** | **71.7~72.7 tok/s** |
 | dsh-harness 日常使用加权（100 请求 / 40,038 tokens） | 59.2 tok/s |
 | 短输出热身峰值 | 82 tok/s |
 
-**59~63 tok/s 就是这台双 V100 跑 125B MoE 的真实平台。**
+上游每次引擎更新都在推高这个平台：44.8（部署日）→ 59~63（v0.1.38 复测）→ 71.7+（v0.1.40）。
 
 ## 4. 加速空间结论（诚实版）
 
@@ -205,7 +206,7 @@ chunk 间隔 p50:  0 ms（服务端每批推多个 token）｜ p95: 65 ms
 | CPU performance 调频 | ➖ 无变化（E5 v3 已满频） |
 | 校准参数（--pcie-frac / --pool-workers / --spec-min-p） | ➖ 长输出实测无增益（短基准误导），保持默认 |
 | Strata tensor 并行模式 | ❌ meta allocator 在 SM70 段错误（上游 bug）—— **只能用 peer-tier** |
-| **QSA scorer tf32 mma** | ❌ **结构性天花板**：sm80+ 原生指令，sm70 走 fp32-FMA 回退，59~63 tok/s 已到头 |
+| **QSA scorer tf32 mma** | ⚠️ sm80+ 原生指令，sm70 走 fp32-FMA 回退 —— 但 v0.1.40 的调度优化已把平台推到 72+，此前的"59~63 已到头"结论被上游更新证伪 |
 
 ## 5. 踩坑清单
 
@@ -219,6 +220,8 @@ chunk 间隔 p50:  0 ms（服务端每批推多个 token）｜ p95: 65 ms
 | 6 | tensor 并行 SM70 段错误 | 只用 `--peer-device` peer-tier 模式 |
 | 7 | HF/魔搭下载渠道差异 | 魔搭直链 34 MiB/s，比 hf-mirror 快约 300× |
 | 8 | `/tmp` 重启清空 | 编译产物/测试脚本/日志不放 /tmp |
+| 9 | v0.1.40：`--peer-device` 与 `--layer-split` 互斥（同时用直接退出） | 只留 `layer_split: "auto"`，删掉全部 peer-* 参数 |
+| 10 | 0.1.38 手动启动漏传 `CUDA_VISIBLE_DEVICES` → peer-tier 静默未启用 | systemd 单元显式设置环境变量 |
 
 ## 6. 文件说明与复现
 
@@ -261,7 +264,7 @@ pkill -9 -f 'serve/server.py'; pkill -9 -f 'engine/strata'  # 停止
 ## 环境版本
 
 - NVIDIA Driver 580.178.04 / CUDA 12.8 / Ubuntu 24.04
-- Strata v0.17.0 源码 + llama.cpp 3cf0325（FetchContent 依赖）
+- Strata v0.1.40.1 源码 + llama.cpp 3cf0325（FetchContent 依赖）
 - 模型：Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S（77.9 GiB）+ mmproj 0.9G
 
 ## License
