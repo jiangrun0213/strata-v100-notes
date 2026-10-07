@@ -96,10 +96,15 @@ cd ~/strata && .venv/bin/python serve/server.py --engine strata \
 加载完成后的显存形态：
 
 ```
-GPU0  15.7 GiB  主卡：密集层 + KV(int8) + MTP + 主专家缓存 4503 槽（8.53 GiB）
-GPU1  15.7 GiB  Peer Tier：二级自适应专家缓存（NVLink P2P 取回，字节一致输出）
+GPU0  15.6 GiB  密集层前半 + KV(int8) + MTP + 热专家缓存
+GPU1  15.8 GiB  密集层后半(session [25,48) + head) + 冷专家缓存（NVLink P2P）
 API    http://127.0.0.1:18200/v1（OpenAI 兼容）
 ```
+
+> **v0.1.40 多卡架构变化**：旧版 `--peer-device`（peer-tier）与 `--layer-split` 已合并 ——
+> 新版同时使用会直接报错退出。双卡只需 `layer_split: "auto"`，helper GPU 的专家缓存
+> 与热/冷调度由引擎自动处理（#848 #854）。解码 44.8（v0.1.38 部署日）→ 59~63（复测）
+> → **71.7~72.7 tok/s（v0.1.40）**。
 
 ### 2.4 视觉（多模态）启用
 
